@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import "./App.css";
 import MapView from "./MapView";
 
-const API_URL = "http://localhost:5000/api";
+const API_URL =
+  import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 const routes = [
   {

@@ -63,7 +63,9 @@ router.put("/:journeyId/location", async (req, res) => {
     journey.currentLocation = { latitude: Number(latitude), longitude: Number(longitude), accuracy: Number(accuracy) || null };
     journey.distanceFromRoute = distanceFromRoute ?? 0;
     journey.routeDeviation = deviation;
-    journey.incidentWarning = Boolean(incidentWarning);
+    const hadIncidentWarning = journey.incidentWarning;
+    const newIncidentWarning = Boolean(incidentWarning);
+    journey.incidentWarning = newIncidentWarning;
     journey.lastLocationAt = new Date();
     if (deviation && journey.status === "ACTIVE") journey.status = "DEVIATED";
 
@@ -79,7 +81,7 @@ router.put("/:journeyId/location", async (req, res) => {
       });
     }
 
-    if (incidentWarning && !journey.incidentWarning) {
+    if (newIncidentWarning && !hadIncidentWarning) {
       await Alert.create({
         touristId: journey.touristId,
         journeyId: journey._id,

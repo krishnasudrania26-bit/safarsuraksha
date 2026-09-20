@@ -7,6 +7,8 @@ const touristRoutes = require("./routes/touristRoutes");
 const journeyRoutes = require("./routes/journeyRoutes");
 const safetyRoutes = require("./routes/safetyRoutes");
 const alertRoutes = require("./routes/alertRoutes");
+const authorityRoutes = require("./routes/authorityRoutes");
+const rateLimit = require("./middleware/rateLimit");
 const placeRoutes = require("./routes/placeRoutes");
 const routingRoutes = require("./routes/routingRoutes");
 
@@ -21,6 +23,7 @@ const PORT = process.env.PORT || 5000;
 const allowedOrigins = process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(",").map((origin) => origin.trim()) : true;
 app.use(cors({ origin: allowedOrigins }));
 app.use(express.json({ limit: "1mb" }));
+app.use("/api", rateLimit({ windowMs: 60 * 1000, max: 120 }));
 
 app.get("/api/health", (req, res) => {
   res.json({ success: true, service: "safarsuraksha-api", timestamp: new Date().toISOString() });
@@ -48,6 +51,7 @@ app.use("/api/tourists", touristRoutes);
 app.use("/api/journeys", journeyRoutes);
 app.use("/api/safety", safetyRoutes);
 app.use("/api/alerts", alertRoutes);
+app.use("/api/authority", authorityRoutes);
 app.use("/api/places", placeRoutes);
 app.use("/api/routes", routingRoutes);
 

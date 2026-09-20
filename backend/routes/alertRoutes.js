@@ -1,6 +1,7 @@
 const express = require("express");
 const Alert = require("../models/Alert");
 const Tourist = require("../models/Tourist");
+const auth = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -20,7 +21,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-router.get("/", async (req, res) => {
+router.get("/", auth(["AUTHORITY", "ADMIN"]), async (req, res) => {
   try {
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
@@ -32,7 +33,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-router.get("/:alertId", async (req, res) => {
+router.get("/:alertId", auth(["AUTHORITY", "ADMIN"]), async (req, res) => {
   try {
     const alert = await Alert.findById(req.params.alertId).lean();
     if (!alert) return res.status(404).json({ success: false, message: "Alert not found." });
@@ -43,7 +44,7 @@ router.get("/:alertId", async (req, res) => {
   }
 });
 
-router.patch("/:alertId/status", async (req, res) => {
+router.patch("/:alertId/status", auth(["AUTHORITY", "ADMIN"]), async (req, res) => {
   try {
     const { status } = req.body;
     if (!["ACTIVE", "ACKNOWLEDGED", "RESOLVED", "CANCELLED"].includes(status)) {

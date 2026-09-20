@@ -1,149 +1,88 @@
 const express = require("express");
 const Journey = require("../models/Journey");
 const Alert = require("../models/Alert");
+const { distanceToRouteKm } = require("../utils/geo");
 
 const router = express.Router();
 
-// ===============================
-// START A JOURNEY
-// ===============================
 router.post("/start", async (req, res) => {
   try {
     const {
-      touristId,
-      destination,
-      routeName,
-      routeDistance,
-      safetyScore,
-      latitude,
-      longitude,
+      touristId, destination, routeName, routeDistance, safetyScore,
+      latitude, longitude, accuracy, routeGeometry, destinationLocation,
     } = req.body;
 
-    if (
-      !touristId ||
-      !destination ||
-      !routeName ||
-      routeDistance === undefined ||
-      safetyScore === undefined
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide all journey information.",
-      });
+    if (!touristId || !destination || !routeName || routeDistance === undefined || safetyScore === undefined) {
+      return res.status(400).json({ success: false, message: "Please provide all journey information." });
     }
 
     const journey = await Journey.create({
-      touristId,
-      destination,
-      routeName,
-      routeDistance,
-      safetyScore,
-
+      touristId, destination, routeName, routeDistance, safetyScore,
+      routeGeometry: routeGeometry || null,
+      destinationLocation: destinationLocation || null,
       status: "ACTIVE",
-
-      currentLocation: {
-        latitude: latitude || null,
-        longitude: longitude || null,
-      },
-
-      distanceFromRoute: 0,
-      routeDeviation: false,
-      incidentWarning: false,
-      sosActive: false,
+      currentLocation: { latitude: latitude ?? null, longitude: longitude ?? null, accuracy: accuracy ?? null },
+      lastLocationAt: latitude != null && longitude != null ? new Date() : null,
+      distanceFromRoute: 0, routeDeviation: false, incidentWarning: false, sosActive: false,
     });
 
-    res.status(201).json({
-      success: true,
-      message: "Journey started successfully.",
-      journey,
-    });
+    res.status(201).json({ success: true, message: "Journey started successfully.", journey });
   } catch (error) {
     console.error("Start journey error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Unable to start journey.",
-    });
+    res.status(500).json({ success: false, message: "Unable to start journey." });
   }
 });
 
-// ===============================
-// GET JOURNEY BY ID
-// ===============================
 router.get("/:journeyId", async (req, res) => {
   try {
     const journey = await Journey.findById(req.params.journeyId);
-
-    if (!journey) {
-      return res.status(404).json({
-        success: false,
-        message: "Journey not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      journey,
-    });
+    if (!journey) return res.status(404).json({ success: false, message: "Journey not found." });
+    res.json({ success: true, journey });
   } catch (error) {
-    console.error("Get journey error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Unable to fetch journey.",
-    });
+    res.status(500).json({ success: false, message: "Unable to fetch journey." });
   }
 });
 
-// ===============================
-// UPDATE TOURIST LOCATION
-// ===============================
 router.put("/:journeyId/location", async (req, res) => {
   try {
-    const {
-      latitude,
-      longitude,
-      distanceFromRoute,
-      routeDeviation,
-      incidentWarning,
-    } = req.body;
+    const { latitude, longitude, accuracy, incidentWarning } = req.body;
+    const journey = await Journey.findById(req.params.journeyId);
 
-    const existingJourney = await Journey.findById(req.params.journeyId);
-
-    if (!existingJourney) {
-      return res.status(404).json({
-        success: false,
-        message: "Journey not found.",
-      });
+    if (!journey) return res.status(404).json({ success: false, message: "Journey not found." });
+    if (!Number.isFinite(Number(latitude)) || !Number.isFinite(Number(longitude))) {
+      return res.status(400).json({ success: false, message: "Valid GPS coordinates are required." });
     }
 
-    const updateData = {
-      currentLocation: {
-        latitude,
-        longitude,
-      },
-      distanceFromRoute: Number(distanceFromRoute || 0),
-      routeDeviation: Boolean(routeDeviation),
-      incidentWarning: Boolean(incidentWarning),
-    };
+    const distanceFromRoute = distanceToRouteKm(
+      { latitude: Number(latitude), longitude: Number(longitude) },
+      journey.routeGeometry
+    );
+    const deviation = distanceFromRoute != null && distanceFromRoute >= Number(process.env.ROUTE_DEVIATION_KM || 0.15);
+    const becameDeviated = deviation && !journey.routeDeviation;
 
-    if (routeDeviation) {
-      updateData.status = "DEVIATED";
+    journey.currentLocation = { latitude: Number(latitude), longitude: Number(longitude), accuracy: Number(accuracy) || null };
+    journey.distanceFromRoute = distanceFromRoute ?? 0;
+    journey.routeDeviation = deviation;
+    journey.incidentWarning = Boolean(incidentWarning);
+    journey.lastLocationAt = new Date();
+    if (deviation && journey.status === "ACTIVE") journey.status = "DEVIATED";
+
+    if (becameDeviated) {
       await Alert.create({
-        touristId: existingJourney.touristId,
-        journeyId: existingJourney._id,
+        touristId: journey.touristId,
+        journeyId: journey._id,
         type: "ROUTE_DEVIATION",
-        severity: Number(distanceFromRoute || 0) >= 1 ? "HIGH" : "MEDIUM",
-        message: `Tourist is ${Number(distanceFromRoute || 0).toFixed(2)} km away from the planned route.`,
-        location: { latitude, longitude },
-        metadata: { distanceFromRoute: Number(distanceFromRoute || 0) },
+        severity: (distanceFromRoute || 0) >= 1 ? "HIGH" : "MEDIUM",
+        message: `Tourist is ${(distanceFromRoute || 0).toFixed(2)} km away from the planned route.`,
+        location: { latitude, longitude, accuracy },
+        metadata: { distanceFromRoute },
       });
     }
 
-    if (incidentWarning) {
+    if (incidentWarning && !journey.incidentWarning) {
       await Alert.create({
-        touristId: existingJourney.touristId,
-        journeyId: existingJourney._id,
+        touristId: journey.touristId,
+        journeyId: journey._id,
         type: "RISK_ZONE",
         severity: "HIGH",
         message: "A risk-zone warning was triggered for the active journey.",
@@ -151,113 +90,52 @@ router.put("/:journeyId/location", async (req, res) => {
       });
     }
 
-    const journey = await Journey.findByIdAndUpdate(
-      req.params.journeyId,
-      updateData,
-      {
-        new: true,
-      }
-    );
-
-    if (!journey) {
-      return res.status(404).json({
-        success: false,
-        message: "Journey not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Journey location updated.",
-      journey,
-    });
+    await journey.save();
+    res.json({ success: true, message: "Journey location updated.", journey });
   } catch (error) {
     console.error("Location update error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Unable to update journey location.",
-    });
+    res.status(500).json({ success: false, message: "Unable to update journey location." });
   }
 });
 
-// ===============================
-// ACTIVATE SOS
-// ===============================
 router.put("/:journeyId/sos", async (req, res) => {
   try {
-    const { active } = req.body;
-
+    const { active, latitude, longitude } = req.body;
     const journey = await Journey.findByIdAndUpdate(
       req.params.journeyId,
-      {
-        sosActive: active,
-        status: active ? "SOS" : "DEVIATED",
-      },
-      {
-        new: true,
-      }
+      { sosActive: Boolean(active), status: active ? "SOS" : "ACTIVE", currentLocation: { latitude, longitude } },
+      { new: true }
     );
+    if (!journey) return res.status(404).json({ success: false, message: "Journey not found." });
 
-    if (!journey) {
-      return res.status(404).json({
-        success: false,
-        message: "Journey not found.",
+    if (active) {
+      await Alert.create({
+        touristId: journey.touristId,
+        journeyId: journey._id,
+        type: "SOS",
+        severity: "CRITICAL",
+        message: "SOS activated by tourist.",
+        location: { latitude, longitude },
       });
     }
 
-    res.json({
-      success: true,
-      message: active
-        ? "SOS activated successfully."
-        : "SOS deactivated.",
-      journey,
-    });
+    res.json({ success: true, message: active ? "SOS activated successfully." : "SOS deactivated.", journey });
   } catch (error) {
-    console.error("SOS error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Unable to update SOS status.",
-    });
+    res.status(500).json({ success: false, message: "Unable to update SOS status." });
   }
 });
 
-// ===============================
-// COMPLETE JOURNEY
-// ===============================
 router.put("/:journeyId/complete", async (req, res) => {
   try {
     const journey = await Journey.findByIdAndUpdate(
       req.params.journeyId,
-      {
-        status: "COMPLETED",
-        sosActive: false,
-      },
-      {
-        new: true,
-      }
+      { status: "COMPLETED", sosActive: false },
+      { new: true }
     );
-
-    if (!journey) {
-      return res.status(404).json({
-        success: false,
-        message: "Journey not found.",
-      });
-    }
-
-    res.json({
-      success: true,
-      message: "Journey completed successfully.",
-      journey,
-    });
+    if (!journey) return res.status(404).json({ success: false, message: "Journey not found." });
+    res.json({ success: true, message: "Journey completed successfully.", journey });
   } catch (error) {
-    console.error("Complete journey error:", error);
-
-    res.status(500).json({
-      success: false,
-      message: "Unable to complete journey.",
-    });
+    res.status(500).json({ success: false, message: "Unable to complete journey." });
   }
 });
 

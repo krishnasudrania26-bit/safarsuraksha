@@ -7,6 +7,8 @@ const touristRoutes = require("./routes/touristRoutes");
 const journeyRoutes = require("./routes/journeyRoutes");
 const safetyRoutes = require("./routes/safetyRoutes");
 const alertRoutes = require("./routes/alertRoutes");
+const placeRoutes = require("./routes/placeRoutes");
+const routingRoutes = require("./routes/routingRoutes");
 
 const app = express();
 
@@ -46,6 +48,8 @@ app.use("/api/tourists", touristRoutes);
 app.use("/api/journeys", journeyRoutes);
 app.use("/api/safety", safetyRoutes);
 app.use("/api/alerts", alertRoutes);
+app.use("/api/places", placeRoutes);
+app.use("/api/routes", routingRoutes);
 
 
 // ===============================

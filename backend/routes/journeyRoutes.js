@@ -1,5 +1,6 @@
 const express = require("express");
 const Journey = require("../models/Journey");
+const Alert = require("../models/Alert");
 
 const router = express.Router();
 
@@ -107,18 +108,47 @@ router.put("/:journeyId/location", async (req, res) => {
       incidentWarning,
     } = req.body;
 
+    const existingJourney = await Journey.findById(req.params.journeyId);
+
+    if (!existingJourney) {
+      return res.status(404).json({
+        success: false,
+        message: "Journey not found.",
+      });
+    }
+
     const updateData = {
       currentLocation: {
         latitude,
         longitude,
       },
-      distanceFromRoute: distanceFromRoute || 0,
-      routeDeviation: routeDeviation || false,
-      incidentWarning: incidentWarning || false,
+      distanceFromRoute: Number(distanceFromRoute || 0),
+      routeDeviation: Boolean(routeDeviation),
+      incidentWarning: Boolean(incidentWarning),
     };
 
     if (routeDeviation) {
       updateData.status = "DEVIATED";
+      await Alert.create({
+        touristId: existingJourney.touristId,
+        journeyId: existingJourney._id,
+        type: "ROUTE_DEVIATION",
+        severity: Number(distanceFromRoute || 0) >= 1 ? "HIGH" : "MEDIUM",
+        message: `Tourist is ${Number(distanceFromRoute || 0).toFixed(2)} km away from the planned route.`,
+        location: { latitude, longitude },
+        metadata: { distanceFromRoute: Number(distanceFromRoute || 0) },
+      });
+    }
+
+    if (incidentWarning) {
+      await Alert.create({
+        touristId: existingJourney.touristId,
+        journeyId: existingJourney._id,
+        type: "RISK_ZONE",
+        severity: "HIGH",
+        message: "A risk-zone warning was triggered for the active journey.",
+        location: { latitude, longitude },
+      });
     }
 
     const journey = await Journey.findByIdAndUpdate(

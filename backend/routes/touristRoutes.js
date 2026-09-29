@@ -23,6 +23,7 @@ router.post("/register", async (req, res) => {
       name,
       phone,
       emergencyContact,
+      email,
       destination,
       locationPermission,
       latitude,
@@ -48,6 +49,7 @@ router.post("/register", async (req, res) => {
       name,
       phone,
       emergencyContact,
+      email: email || null,
       destination,
       locationPermission: locationPermission || false,
 

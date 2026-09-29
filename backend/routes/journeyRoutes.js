@@ -72,7 +72,7 @@ router.put("/:journeyId/location", async (req, res) => {
     if (deviation && journey.status === "ACTIVE") journey.status = "DEVIATED";
 
     if (becameDeviated) {
-      const deviationAlert = await Alert.create({
+      await Alert.create({
         touristId: journey.touristId,
         journeyId: journey._id,
         type: "ROUTE_DEVIATION",

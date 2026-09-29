@@ -13,13 +13,67 @@ async function api(path, options = {}) {
 
 const fallbackOrigin = { latitude: 26.9124, longitude: 75.7873 };
 
+function haversineKm(a, b) {
+  const R = 6371;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const dLat = toRad(b.latitude - a.latitude);
+  const dLon = toRad(b.longitude - a.longitude);
+  const lat1 = toRad(a.latitude);
+  const lat2 = toRad(b.latitude);
+  const x = Math.sin(dLat / 2) ** 2 + Math.sin(dLon / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+}
+
+function pointToSegmentKm(point, a, b) {
+  const latScale = 111.32;
+  const lonScale = 111.32 * Math.cos((point.latitude * Math.PI) / 180);
+  const px = point.longitude * lonScale;
+  const py = point.latitude * latScale;
+  const ax = a.longitude * lonScale;
+  const ay = a.latitude * latScale;
+  const bx = b.longitude * lonScale;
+  const by = b.latitude * latScale;
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 0 && dy === 0) return haversineKm(point, a);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  const nearest = { latitude: (ay + t * dy) / latScale, longitude: (ax + t * dx) / lonScale };
+  return haversineKm(point, nearest);
+}
+
+function localDistanceToRoute(point, geometry) {
+  const coords = geometry?.coordinates || [];
+  if (coords.length < 2) return null;
+  let min = Infinity;
+  for (let i = 1; i < coords.length; i += 1) {
+    const a = { longitude: coords[i - 1][0], latitude: coords[i - 1][1] };
+    const b = { longitude: coords[i][0], latitude: coords[i][1] };
+    min = Math.min(min, pointToSegmentKm(point, a, b));
+  }
+  return Number.isFinite(min) ? min : null;
+}
+
+const OFFLINE_QUEUE_KEY = "ss_pending_locations";
+
+function readPendingLocations() {
+  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; }
+}
+
+function queueLocation(point) {
+  const queue = readPendingLocations();
+  queue.push({ ...point, queuedAt: new Date().toISOString() });
+  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue.slice(-100)));
+}
+
+
+
 export default function ProductApp() {
   const [screen,setScreen]=useState("home"), [profile,setProfile]=useState({name:"",phone:"",emergencyContact:""}), [touristId,setTouristId]=useState("");
   const [auth,setAuth]=useState(()=>{try{return JSON.parse(localStorage.getItem("ss_auth"))||null}catch{return null}}), [login,setLogin]=useState({phone:"",password:""});
   const [origin,setOrigin]=useState(null), [destinationQuery,setDestinationQuery]=useState(""), [destination,setDestination]=useState(null), [suggestions,setSuggestions]=useState([]);
   const [routes,setRoutes]=useState([]), [selectedId,setSelectedId]=useState(""), [currentLocation,setCurrentLocation]=useState(null);
   const [journeyId,setJourneyId]=useState(""), [journeyActive,setJourneyActive]=useState(false), [deviation,setDeviation]=useState(null), [sos,setSos]=useState(false);
-  const [loading,setLoading]=useState(false), [message,setMessage]=useState(""), [authority,setAuthority]=useState(null), [authorityLoading,setAuthorityLoading]=useState(false);
+  const [loading,setLoading]=useState(false), [message,setMessage]=useState(""), [authority,setAuthority]=useState(null), [authorityLoading,setAuthorityLoading]=useState(false), [online,setOnline]=useState(navigator.onLine);
   const watchRef=useRef(null), searchTimer=useRef(null);
   const selectedRoute=useMemo(()=>routes.find(r=>r.id===selectedId)||routes[0],[routes,selectedId]);
   const safetyReason=useMemo(()=>{ if(!selectedRoute?.factors) return null; return Object.entries(selectedRoute.factors).sort((a,b)=>(b[1]?.score??0)-(a[1]?.score??0)).slice(0,3).map(([key,val])=>({key:key.replace(/([A-Z])/g," $1"),score:val?.score??0,evidence:val?.evidence||"Mapped safety evidence available."})); },[selectedRoute]);
@@ -35,7 +89,30 @@ export default function ProductApp() {
 
   const startJourney=async()=>{if(!touristId){setScreen("register");setMessage("Create your Safe Tourist Profile before starting the journey.");return;}if(!selectedRoute)return;setLoading(true);try{const data=await api("/journeys/start",{method:"POST",body:JSON.stringify({touristId,destination:destination.name,routeName:"Route "+selectedId,routeDistance:selectedRoute.distanceKm,safetyScore:selectedRoute.score,latitude:currentLocation?.latitude??origin.latitude,longitude:currentLocation?.longitude??origin.longitude,accuracy:currentLocation?.accuracy,routeGeometry:selectedRoute.geometry,destinationLocation:{latitude:destination.latitude,longitude:destination.longitude}})});setJourneyId(data.journey._id);setJourneyActive(true);setScreen("tracking");setMessage("");}catch(e){setMessage(e.message);}finally{setLoading(false);}};
 
-  useEffect(()=>{if(!journeyActive||!journeyId||!navigator.geolocation)return;watchRef.current=navigator.geolocation.watchPosition(async p=>{const point={latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy};setCurrentLocation(point);try{const data=await api("/journeys/"+journeyId+"/location",{method:"PUT",body:JSON.stringify(point)});setDeviation(data.journey.routeDeviation?data.journey.distanceFromRoute:null);}catch(e){setMessage(e.message);}},()=>setMessage("Live GPS update unavailable."),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});return()=>{if(watchRef.current!==null)navigator.geolocation.clearWatch(watchRef.current);};},[journeyActive,journeyId]);
+  useEffect(()=>{const onOnline=()=>setOnline(true);const onOffline=()=>setOnline(false);window.addEventListener("online",onOnline);window.addEventListener("offline",onOffline);return()=>{window.removeEventListener("online",onOnline);window.removeEventListener("offline",onOffline);};},[]);
+
+useEffect(()=>{if(!journeyActive||!journeyId||!navigator.geolocation)return;
+  const syncPending=async()=>{if(!navigator.onLine)return;const queue=readPendingLocations();if(!queue.length)return;const remaining=[];for(const point of queue){try{await api("/journeys/"+journeyId+"/location",{method:"PUT",body:JSON.stringify(point)});}catch{remaining.push(point);break;}}localStorage.setItem(OFFLINE_QUEUE_KEY,JSON.stringify(remaining));};
+  const handleOnline=()=>{syncPending();};
+  window.addEventListener("online",handleOnline);
+  syncPending();
+
+  watchRef.current=navigator.geolocation.watchPosition(async p=>{
+    const point={latitude:p.coords.latitude,longitude:p.coords.longitude,accuracy:p.coords.accuracy};
+    setCurrentLocation(point);
+    const localDistance=localDistanceToRoute(point,selectedRoute?.geometry);
+    if(localDistance!==null)setDeviation(localDistance>=0.15?localDistance:null);
+    try{
+      if(!navigator.onLine){queueLocation(point);setMessage("Offline mode: GPS tracking continues locally. Location will sync when connection returns.");return;}
+      const data=await api("/journeys/"+journeyId+"/location",{method:"PUT",body:JSON.stringify(point)});
+      setDeviation(data.journey.routeDeviation?data.journey.distanceFromRoute:null);
+    }catch{
+      queueLocation(point);
+      setMessage("Connection lost: GPS tracking continues locally. Location is queued for sync.");
+    }
+  },()=>setMessage("Live GPS update unavailable."),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
+  return()=>{if(watchRef.current!==null)navigator.geolocation.clearWatch(watchRef.current);window.removeEventListener("online",handleOnline);};
+},[journeyActive,journeyId,selectedRoute]);
 
   const activateSOS=async()=>{try{await api("/journeys/"+journeyId+"/sos",{method:"PUT",body:JSON.stringify({active:true,latitude:currentLocation?.latitude,longitude:currentLocation?.longitude})});setSos(true);}catch(e){setMessage(e.message);}};
   const loadAuthority=async()=>{setAuthorityLoading(true);try{const data=await api("/authority/overview",{headers:{Authorization:"Bearer "+auth?.token}});setAuthority(data);setScreen("authority");}catch(e){setMessage(e.message);}finally{setAuthorityLoading(false);}};
@@ -60,6 +137,6 @@ export default function ProductApp() {
 
     {screen==="authority"&&<main className="authority-page"><div className="routes-head"><div><span className="product-kicker">SAFARSURAKSHA CONTROL ROOM</span><h2>Authority Dashboard</h2><p>Monitor active journeys and respond to recorded safety alerts.</p></div><button className="secondary" onClick={loadAuthority}>Refresh</button></div>{authority&&<><div className="authority-stats"><div><b>{authority.summary.activeJourneys}</b><span>ACTIVE JOURNEYS</span></div><div><b>{authority.summary.activeAlerts}</b><span>ACTIVE ALERTS</span></div><div className="danger"><b>{authority.summary.sosAlerts}</b><span>SOS ALERTS</span></div><div><b>{authority.summary.deviations}</b><span>DEVIATIONS</span></div></div><div className="authority-grid"><section className="authority-card"><h3>Active Alerts</h3>{authority.activeAlerts.length===0?<p>No active alerts.</p>:authority.activeAlerts.map(a=><article className="authority-alert" key={a._id}><div><strong>{a.type.replaceAll("_"," ")}</strong><span className={a.severity==="CRITICAL"?"critical":""}>{a.severity}</span></div><p>{a.message}</p><small>{new Date(a.createdAt).toLocaleString()}</small><div className="alert-actions"><button onClick={()=>updateAlert(a._id,"ACKNOWLEDGED")}>Acknowledge</button><button onClick={()=>updateAlert(a._id,"RESOLVED")}>Resolve</button></div></article>)}</section><section className="authority-card"><h3>Active Journeys</h3>{authority.activeJourneys.length===0?<p>No active journeys.</p>:authority.activeJourneys.map(j=><article className="journey-row" key={j._id}><div><strong>{j.destination}</strong><span>{j.routeName} • {j.safetyScore}/100</span></div><b>{j.status}</b><small>{j.currentLocation?.latitude?.toFixed?.(5)}, {j.currentLocation?.longitude?.toFixed?.(5)}</small></article>)}</section></div></>}</main>}
 
-    {screen==="tracking"&&<main className="tracking-product"><div className="tracking-head"><div><span className="product-kicker">LIVE JOURNEY</span><h2>You're being monitored.</h2><p>{destination?.name}</p></div><span className="live-dot">● LIVE</span></div><div className="tracking-grid"><RealMap routes={selectedRoute?[selectedRoute]:[]} selectedRoute={selectedRoute} currentLocation={currentLocation} destination={destination}/><aside><div className="live-card"><span>ROUTE SAFETY</span><b>{selectedRoute?.score}/100</b><p>{selectedRoute?.level}</p></div><div className="live-card"><span>GPS STATUS</span><b>{currentLocation?"ACTIVE":"WAITING"}</b><p>{currentLocation?currentLocation.latitude.toFixed(5)+", "+currentLocation.longitude.toFixed(5):"Waiting for GPS permission"}</p></div>{deviation!==null&&<div className="deviation-card"><b>⚠️ ROUTE DEVIATION</b><p>You are approximately {deviation.toFixed(2)} km from the planned route.</p></div>}{sos&&<div className="sos-card-product"><b>🚨 SOS ACTIVE</b><p>Your SOS alert has been recorded. Keep your phone available for responders.</p></div>}{!sos&&<div className="sos-card-product sos-ready"><b>Emergency help</b><p>If you feel unsafe or need assistance, send your current location to the authority dashboard.</p><button className="primary wide" onClick={activateSOS}>🚨 I NEED HELP / SOS</button></div>}<button className="secondary wide" onClick={completeJourney}>End Journey</button></aside></div></main>}
+    {screen==="tracking"&&<main className="tracking-product"><div className="tracking-head"><div><span className="product-kicker">LIVE JOURNEY</span><h2>You're being monitored.</h2><p>{destination?.name}</p></div><span className="live-dot">{online?"● ONLINE":"● OFFLINE"}</span></div><div className="tracking-grid"><RealMap routes={selectedRoute?[selectedRoute]:[]} selectedRoute={selectedRoute} currentLocation={currentLocation} destination={destination}/><aside><div className="live-card"><span>ROUTE SAFETY</span><b>{selectedRoute?.score}/100</b><p>{selectedRoute?.level}</p></div><div className="live-card"><span>GPS STATUS</span><b>{currentLocation?"ACTIVE":"WAITING"}</b><p>{currentLocation?currentLocation.latitude.toFixed(5)+", "+currentLocation.longitude.toFixed(5):"Waiting for GPS permission"}</p></div>{deviation!==null&&<div className="deviation-card"><b>⚠️ ROUTE DEVIATION</b><p>You are approximately {deviation.toFixed(2)} km from the planned route.</p></div>}{sos&&<div className="sos-card-product"><b>🚨 SOS ACTIVE</b><p>Your SOS alert has been recorded. Keep your phone available for responders.</p></div>}{!sos&&<div className="sos-card-product sos-ready"><b>Emergency help</b><p>If you feel unsafe or need assistance, send your current location to the authority dashboard.</p><button className="primary wide" onClick={activateSOS}>🚨 I NEED HELP / SOS</button></div>}<button className="secondary wide" onClick={completeJourney}>End Journey</button></aside></div></main>}
   </div>;
 }

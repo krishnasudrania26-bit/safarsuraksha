@@ -19,6 +19,13 @@ const touristSchema = new mongoose.Schema(
       required: true,
     },
 
+    email: {
+      type: String,
+      default: null,
+      trim: true,
+      lowercase: true,
+    },
+
     emergencyContact: {
       type: String,
       required: true,

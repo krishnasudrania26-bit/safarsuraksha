@@ -1,7 +1,9 @@
 const express = require("express");
 const Journey = require("../models/Journey");
 const Alert = require("../models/Alert");
+const Tourist = require("../models/Tourist");
 const { distanceToRouteKm } = require("../utils/geo");
+const { notifyEmergencyContact } = require("../services/notificationService");
 
 const router = express.Router();
 
@@ -70,7 +72,7 @@ router.put("/:journeyId/location", async (req, res) => {
     if (deviation && journey.status === "ACTIVE") journey.status = "DEVIATED";
 
     if (becameDeviated) {
-      await Alert.create({
+      const deviationAlert = await Alert.create({
         touristId: journey.touristId,
         journeyId: journey._id,
         type: "ROUTE_DEVIATION",
@@ -78,6 +80,11 @@ router.put("/:journeyId/location", async (req, res) => {
         message: `Tourist is ${(distanceFromRoute || 0).toFixed(2)} km away from the planned route.`,
         location: { latitude, longitude, accuracy },
         metadata: { distanceFromRoute },
+      });
+
+      const tourist = await Tourist.findOne({ touristId: journey.touristId }).lean();
+      notifyEmergencyContact({ tourist, type: "ROUTE_DEVIATION", latitude, longitude }).catch((error) => {
+        console.error("Deviation notification error:", error.message);
       });
     }
 
@@ -119,11 +126,60 @@ router.put("/:journeyId/sos", async (req, res) => {
         message: "SOS activated by tourist.",
         location: { latitude, longitude },
       });
+
+      const tourist = await Tourist.findOne({ touristId: journey.touristId }).lean();
+      const notification = await notifyEmergencyContact({ tourist, type: "SOS", latitude, longitude });
+      console.log("SOS notification result:", notification);
     }
 
     res.json({ success: true, message: active ? "SOS activated successfully." : "SOS deactivated.", journey });
   } catch (error) {
     res.status(500).json({ success: false, message: "Unable to update SOS status." });
+  }
+});
+
+router.put("/:journeyId/safety-check", async (req, res) => {
+  try {
+    const { safe = true, latitude, longitude } = req.body;
+    const journey = await Journey.findById(req.params.journeyId);
+    if (!journey) return res.status(404).json({ success: false, message: "Journey not found." });
+
+    if (safe) {
+      await Alert.updateMany(
+        { journeyId: journey._id, type: "ROUTE_DEVIATION", status: { $in: ["ACTIVE", "ACKNOWLEDGED"] } },
+        { status: "RESOLVED", resolvedAt: new Date() }
+      );
+      journey.routeDeviation = false;
+      journey.status = journey.sosActive ? "SOS" : "ACTIVE";
+      if (latitude != null && longitude != null) {
+        journey.currentLocation = {
+          latitude: Number(latitude),
+          longitude: Number(longitude),
+          accuracy: journey.currentLocation?.accuracy ?? null,
+        };
+      }
+      await journey.save();
+    }
+
+    const alert = await Alert.create({
+      touristId: journey.touristId,
+      journeyId: journey._id,
+      type: "SAFETY_CHECK",
+      severity: safe ? "LOW" : "HIGH",
+      status: safe ? "ACKNOWLEDGED" : "ACTIVE",
+      message: safe ? "Tourist confirmed they are safe." : "Tourist requested assistance during a safety check.",
+      location: { latitude, longitude },
+    });
+
+    if (!safe) {
+      const tourist = await Tourist.findOne({ touristId: journey.touristId }).lean();
+      await notifyEmergencyContact({ tourist, type: "SAFETY_CHECK", latitude, longitude });
+    }
+
+    res.json({ success: true, message: safe ? "Safety check recorded." : "Assistance requested.", alert, journey });
+  } catch (error) {
+    console.error("Safety check error:", error);
+    res.status(500).json({ success: false, message: "Unable to record safety check." });
   }
 });
 

@@ -1,6 +1,7 @@
 const OVERPASS_URL = process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter";
 const OVERPASS_MIRRORS = [
   OVERPASS_URL,
+  "https://overpass.private.coffee/api/interpreter",
   "https://overpass.kumi.systems/api/interpreter",
 ].filter((url, index, list) => list.indexOf(url) === index);
 
@@ -53,7 +54,7 @@ async function collectContext(geometry) {
 
       if (!response.ok) throw new Error(`Safety data provider returned ${response.status}`);
       const data = await response.json();
-      return Number(data?.elements?.[0]?.tags?.total || 0);
+      // Overpass `out count;` returns `{ count: { total, nodes, ways, relations } }` in JSON.\n      // Keep a legacy fallback for providers that may wrap the count differently.\n      return Number(data?.count?.total ?? data?.elements?.[0]?.tags?.total ?? 0);
     } finally {
       clearTimeout(timeout);
     }

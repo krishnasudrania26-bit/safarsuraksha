@@ -1,4 +1,8 @@
 const OVERPASS_URL = process.env.OVERPASS_URL || "https://overpass-api.de/api/interpreter";
+const OVERPASS_MIRRORS = [
+  OVERPASS_URL,
+  "https://overpass.kumi.systems/api/interpreter",
+].filter((url, index, list) => list.indexOf(url) === index);
 
 function bboxFromGeometry(geometry) {
   const coords = geometry?.coordinates || [];
@@ -34,26 +38,45 @@ async function collectContext(geometry) {
 out center tags;
 `;
 
-  const response = await fetch(OVERPASS_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ data: query }),
-  });
+  let lastError = null;
+  for (const endpoint of OVERPASS_MIRRORS) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": process.env.NOMINATIM_USER_AGENT || "SafarSuraksha/1.0",
+        },
+        body: new URLSearchParams({ data: query }),
+        signal: controller.signal,
+      });
 
-  if (!response.ok) throw new Error(`Safety data provider returned ${response.status}`);
+      if (!response.ok) throw new Error(`Safety data provider returned ${response.status}`);
 
-  const data = await response.json();
-  const elements = data.elements || [];
+      const data = await response.json();
+      const elements = data.elements || [];
 
-  const count = (predicate) => elements.filter(predicate).length;
+      const count = (predicate) => elements.filter(predicate).length;
 
-  return {
-    hospitals: count((e) => e.tags?.amenity === "hospital"),
-    police: count((e) => e.tags?.amenity === "police"),
-    publicTransport: count((e) => Boolean(e.tags?.public_transport)),
-    streetLights: count((e) => e.tags?.highway === "street_lamp"),
-    shops: count((e) => Boolean(e.tags?.shop)),
-  };
+      return {
+        hospitals: count((e) => e.tags?.amenity === "hospital"),
+        police: count((e) => e.tags?.amenity === "police"),
+        publicTransport: count((e) => Boolean(e.tags?.public_transport)),
+        streetLights: count((e) => e.tags?.highway === "street_lamp"),
+        shops: count((e) => Boolean(e.tags?.shop)),
+      };
+    } catch (error) {
+      lastError = error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw new Error(lastError?.message || "All safety data providers failed.");
+
+
 }
 
 async function analyzeRoute(route) {

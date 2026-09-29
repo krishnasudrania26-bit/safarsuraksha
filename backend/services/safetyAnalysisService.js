@@ -27,21 +27,19 @@ function factorFromCount(count, start, full) {
 
 async function collectContext(geometry) {
   const [south, west, north, east] = bboxFromGeometry(geometry);
-  const query = `[out:json][timeout:25];
-(
-  nwr["amenity"="hospital"](${south},${west},${north},${east});
-  nwr["amenity"="police"](${south},${west},${north},${east});
-  nwr["public_transport"](${south},${west},${north},${east});
-  nwr["highway"="street_lamp"](${south},${west},${north},${east});
-  nwr["shop"](${south},${west},${north},${east});
-);
-out center tags;
-`;
+  const bbox = `(${south},${west},${north},${east})`;
 
-  let lastError = null;
-  for (const endpoint of OVERPASS_MIRRORS) {
+  const queries = {
+    hospitals: `[out:json][timeout:20];nwr["amenity"="hospital"]${bbox};out count;`,
+    police: `[out:json][timeout:20];nwr["amenity"="police"]${bbox};out count;`,
+    publicTransport: `[out:json][timeout:20];nwr["public_transport"]${bbox};out count;`,
+    streetLights: `[out:json][timeout:20];nwr["highway"="street_lamp"]${bbox};out count;`,
+    shops: `[out:json][timeout:20];node["shop"]${bbox};out count;`,
+  };
+
+  async function requestCount(endpoint, query) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 20000);
+    const timeout = setTimeout(() => controller.abort(), 25000);
     try {
       const response = await fetch(endpoint, {
         method: "POST",
@@ -54,29 +52,28 @@ out center tags;
       });
 
       if (!response.ok) throw new Error(`Safety data provider returned ${response.status}`);
-
       const data = await response.json();
-      const elements = data.elements || [];
-
-      const count = (predicate) => elements.filter(predicate).length;
-
-      return {
-        hospitals: count((e) => e.tags?.amenity === "hospital"),
-        police: count((e) => e.tags?.amenity === "police"),
-        publicTransport: count((e) => Boolean(e.tags?.public_transport)),
-        streetLights: count((e) => e.tags?.highway === "street_lamp"),
-        shops: count((e) => Boolean(e.tags?.shop)),
-      };
-    } catch (error) {
-      lastError = error;
+      return Number(data?.elements?.[0]?.tags?.total || 0);
     } finally {
       clearTimeout(timeout);
     }
   }
 
+  let lastError = null;
+
+  for (const endpoint of OVERPASS_MIRRORS) {
+    try {
+      const entries = await Promise.all(
+        Object.entries(queries).map(async ([key, query]) => [key, await requestCount(endpoint, query)])
+      );
+
+      return Object.fromEntries(entries);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
   throw new Error(lastError?.message || "All safety data providers failed.");
-
-
 }
 
 async function analyzeRoute(route) {

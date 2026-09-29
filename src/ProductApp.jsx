@@ -56,22 +56,29 @@ function localDistanceToRoute(point, geometry) {
 const OFFLINE_QUEUE_KEY = "ss_pending_locations";
 const OFFLINE_SOS_KEY = "ss_pending_sos";
 
-function readPendingLocations() {
-  try { return JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch { return []; }
+function readPendingLocations(journeyId) {
+  try {
+    const all = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]");
+    return all.filter((item) => !journeyId || item.journeyId === journeyId);
+  } catch { return []; }
 }
 
-function queueLocation(point) {
-  const queue = readPendingLocations();
-  queue.push({ ...point, queuedAt: new Date().toISOString() });
-  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue.slice(-100)));
+function queueLocation(point, journeyId) {
+  let all = [];
+  try { all = JSON.parse(localStorage.getItem(OFFLINE_QUEUE_KEY) || "[]"); } catch {}
+  all.push({ ...point, journeyId, queuedAt: new Date().toISOString() });
+  localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(all.slice(-100)));
 }
 
-function readPendingSos() {
-  try { return JSON.parse(localStorage.getItem(OFFLINE_SOS_KEY) || "null"); } catch { return null; }
+function readPendingSos(journeyId) {
+  try {
+    const value = JSON.parse(localStorage.getItem(OFFLINE_SOS_KEY) || "null");
+    return value && value.journeyId === journeyId ? value : null;
+  } catch { return null; }
 }
 
-function queueSos(point) {
-  localStorage.setItem(OFFLINE_SOS_KEY, JSON.stringify({ ...point, queuedAt: new Date().toISOString() }));
+function queueSos(point, journeyId) {
+  localStorage.setItem(OFFLINE_SOS_KEY, JSON.stringify({ ...point, journeyId, queuedAt: new Date().toISOString() }));
 }
 
 
@@ -103,9 +110,9 @@ export default function ProductApp() {
 
 useEffect(()=>{if(!journeyActive||!journeyId||!navigator.geolocation)return;
   const syncPending=async()=>{if(!navigator.onLine)return;
-    const queue=readPendingLocations();
+    const queue=readPendingLocations(journeyId);
     if(queue.length){const remaining=[];for(const point of queue){try{await api("/journeys/"+journeyId+"/location",{method:"PUT",body:JSON.stringify(point)});}catch{remaining.push(point);break;}}localStorage.setItem(OFFLINE_QUEUE_KEY,JSON.stringify(remaining));}
-    const pendingSos=readPendingSos();
+    const pendingSos=readPendingSos(journeyId);
     if(pendingSos){try{await api("/journeys/"+journeyId+"/sos",{method:"PUT",body:JSON.stringify({active:true,latitude:pendingSos.latitude,longitude:pendingSos.longitude})});localStorage.removeItem(OFFLINE_SOS_KEY);setSos(true);setMessage("Offline SOS synced to the safety system.");}catch{}}
   };
   const handleOnline=()=>{syncPending();};
@@ -118,11 +125,11 @@ useEffect(()=>{if(!journeyActive||!journeyId||!navigator.geolocation)return;
     const localDistance=localDistanceToRoute(point,selectedRoute?.geometry);
     if(localDistance!==null)setDeviation(localDistance>=0.15?localDistance:null);
     try{
-      if(!navigator.onLine){queueLocation(point);setMessage("Offline mode: GPS tracking continues locally. Location will sync when connection returns.");return;}
+      if(!navigator.onLine){queueLocation(point,journeyId);setMessage("Offline mode: GPS tracking continues locally. Location will sync when connection returns.");return;}
       const data=await api("/journeys/"+journeyId+"/location",{method:"PUT",body:JSON.stringify(point)});
       setDeviation(data.journey.routeDeviation?data.journey.distanceFromRoute:null);
     }catch{
-      queueLocation(point);
+      queueLocation(point,journeyId);
       setMessage("Connection lost: GPS tracking continues locally. Location is queued for sync.");
     }
   },()=>setMessage("Live GPS update unavailable."),{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
@@ -132,7 +139,7 @@ useEffect(()=>{if(!journeyActive||!journeyId||!navigator.geolocation)return;
   const activateSOS=async()=>{
     const point={latitude:currentLocation?.latitude,longitude:currentLocation?.longitude};
     if(!navigator.onLine){
-      queueSos(point);
+      queueSos(point,journeyId);
       setSos(true);
       setMessage("Offline SOS queued. Use the SMS fallback below if your phone supports SMS.");
       if(profile.emergencyContact){

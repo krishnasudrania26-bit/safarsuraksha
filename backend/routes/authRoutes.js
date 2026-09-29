@@ -35,6 +35,9 @@ router.post("/register", async (req, res) => {
     const { name, phone, password, role = "TOURIST", touristId = null } = req.body;
     if (!name || !phone || !password) return res.status(400).json({ success: false, message: "Name, phone and password are required." });
     if (!["TOURIST", "AUTHORITY"].includes(role)) return res.status(400).json({ success: false, message: "Invalid role." });
+    if (role === "AUTHORITY" && (!process.env.AUTHORITY_INVITE_CODE || req.body.inviteCode !== process.env.AUTHORITY_INVITE_CODE)) {
+      return res.status(403).json({ success: false, message: "A valid authority invite code is required." });
+    }
     if (password.length < 8) return res.status(400).json({ success: false, message: "Password must be at least 8 characters." });
 
     const existing = await User.findOne({ phone });
